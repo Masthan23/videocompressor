@@ -1,4 +1,4 @@
-# app.py  ── Streamlit Cloud version  (1 GB upload support)
+# app.py  ── Streamlit Cloud version  (10 GB upload support)
 import streamlit as st
 import subprocess, os, uuid, json, tempfile, base64, time, re, sys, io
 from pathlib import Path
@@ -17,7 +17,6 @@ st.markdown("""
   .block-container { max-width: 780px; padding-top: 1.5rem; }
   #MainMenu, footer, header { visibility: hidden; }
 
-  /* Primary buttons */
   .stButton > button {
     background: linear-gradient(135deg, #6c5fff, #a09aff) !important;
     color: white !important; border: none !important;
@@ -31,7 +30,6 @@ st.markdown("""
     opacity: 0.4 !important; cursor: not-allowed !important;
   }
 
-  /* Download button */
   .stDownloadButton > button {
     background: linear-gradient(135deg, #2ecc71, #27ae60) !important;
     color: #050f0a !important; border: none !important;
@@ -44,12 +42,10 @@ st.markdown("""
     transform: translateY(-2px);
   }
 
-  /* Progress bar */
   .stProgress > div > div > div > div {
     background: linear-gradient(90deg, #6c5fff, #a09aff) !important;
   }
 
-  /* Metric cards */
   [data-testid="metric-container"] {
     background: #0d0f1c !important;
     border: 1px solid #1e2238 !important;
@@ -68,7 +64,6 @@ st.markdown("""
     font-weight: 800 !important;
   }
 
-  /* File uploader */
   [data-testid="stFileUploader"] {
     background: #0d0f1c !important;
     border: 2px dashed #1e2238 !important;
@@ -79,7 +74,6 @@ st.markdown("""
     border-color: #6c5fff !important;
   }
 
-  /* Radio buttons */
   .stRadio > div { gap: 8px !important; }
   .stRadio > div > label {
     background: #0d0f1c !important;
@@ -89,18 +83,13 @@ st.markdown("""
     cursor: pointer !important;
   }
 
-  /* Slider */
   .stSlider > div > div > div > div {
     background: #6c5fff !important;
   }
 
-  /* Info / success / error boxes */
   .stAlert { border-radius: 10px !important; }
-
-  /* Divider */
   hr { border-color: #1e2238 !important; }
 
-  /* Success result box */
   .result-box {
     background: linear-gradient(135deg,
       rgba(46,204,113,.08), rgba(108,95,255,.06));
@@ -115,7 +104,6 @@ st.markdown("""
   }
   .result-sub { color: #565a7a; font-size: .85rem; }
 
-  /* Size badge */
   .size-badge {
     display: inline-block;
     background: rgba(46,204,113,.12);
@@ -128,7 +116,6 @@ st.markdown("""
     margin-top: 8px;
   }
 
-  /* Warning */
   .warn-banner {
     background: rgba(231,76,60,.07);
     border: 1px solid rgba(231,76,60,.25);
@@ -286,10 +273,11 @@ def mime_for(ext: str) -> str:
     }.get(ext, 'application/octet-stream')
 
 
-# ── Save uploaded file to disk (chunked, handles up to 1 GB) ──────────────────
+# ── Save uploaded file to disk (chunked, handles up to 10 GB) ─────────────────
 def save_upload(uploaded_file) -> str | None:
     """
     Write the Streamlit UploadedFile to a real temp file on disk.
+    Uses 16 MB chunks to efficiently handle files up to 10 GB.
     Returns the path, or None on failure.
     """
     try:
@@ -297,7 +285,7 @@ def save_upload(uploaded_file) -> str | None:
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
         os.close(tmp_fd)
 
-        CHUNK   = 8 * 1024 * 1024   # 8 MB chunks
+        CHUNK   = 16 * 1024 * 1024   # 16 MB chunks for large file efficiency
         written = 0
         uploaded_file.seek(0)
 
@@ -418,7 +406,7 @@ def compress_file(
                     status_text.markdown(
                         f"📊 **Pass 1/2** — {int(ratio * 100)}%")
 
-            p1.wait(timeout=14400)
+            p1.wait(timeout=86400)   # 24 h for very large files
             if p1.returncode != 0:
                 st.error(f"Pass 1 failed (rc={p1.returncode})")
                 return None
@@ -460,7 +448,6 @@ def compress_file(
                 pct   = base_pct + ratio * (0.95 - base_pct)
                 progress_bar.progress(min(pct, 0.95))
 
-                # Throttle UI updates to every 0.5 s
                 now = time.time()
                 if now - last_update >= 0.5:
                     last_update = now
@@ -476,7 +463,7 @@ def compress_file(
                         f"🗜️ **Compressing…** {int(ratio * 100)}%"
                         f"{cur}{eta}")
 
-        proc.wait(timeout=14400)
+        proc.wait(timeout=86400)   # 24 h for very large files
 
         # ── Validate ───────────────────────────────────────────────────────
         if proc.returncode != 0:
@@ -499,11 +486,20 @@ def compress_file(
         progress_bar.progress(1.0)
         status_text.markdown("✅ **Done!** Reading result…")
 
+        # ── Stream large files in chunks rather than one giant read ────────
+        buf = io.BytesIO()
+        READ_CHUNK = 16 * 1024 * 1024   # 16 MB
         with open(tmp_out, 'rb') as fh:
-            return fh.read()
+            while True:
+                piece = fh.read(READ_CHUNK)
+                if not piece:
+                    break
+                buf.write(piece)
+
+        return buf.getvalue()
 
     except subprocess.TimeoutExpired:
-        st.error("Compression timed out (4 h limit exceeded).")
+        st.error("Compression timed out (24 h limit exceeded).")
         return None
     except Exception as ex:
         st.error(f"Compression error: {ex}")
@@ -556,7 +552,7 @@ def main():
         st.markdown("# 🗜️ Media Compressor")
         st.caption(
             "Compress MP4 · MP3 · any video or audio "
-            "to your exact target size  ·  up to **1 GB**")
+            "to your exact target size  ·  up to **10 GB**")
     with col_badge:
         st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
         if ff_ok:
@@ -573,7 +569,7 @@ def main():
     # ── Step 1 — Upload ────────────────────────────────────────────────────────
     st.markdown("### 📂 Step 1 — Upload Your File")
     st.caption("Supported: MP4, MKV, AVI, MOV, WebM, MP3, WAV, AAC, "
-               "OGG, OPUS, FLAC, M4A and more  ·  Max **1 GB**")
+               "OGG, OPUS, FLAC, M4A and more  ·  Max **10 GB**")
 
     uploaded = st.file_uploader(
         "upload",
@@ -597,29 +593,36 @@ def main():
             Drop your video or audio file here
           </div>
           <div style="font-size:.82rem">
-            or click <b>Browse files</b> above · up to 1 GB
+            or click <b>Browse files</b> above · up to 10 GB
           </div>
         </div>
         """, unsafe_allow_html=True)
+        st.stop()
+
+    # ── Guard: reject anything over 10 GB ─────────────────────────────────────
+    MAX_BYTES = 10 * 1024 * 1024 * 1024   # 10 GB
+    if uploaded.size > MAX_BYTES:
+        st.error(
+            f"File too large: **{fmt_size(uploaded.size / 1048576)}**  \n"
+            f"Maximum allowed size is **10 GB**.")
         st.stop()
 
     # ── Save to disk (only when file changes) ─────────────────────────────────
     file_key = f"{uploaded.name}_{uploaded.size}"
 
     if st.session_state.get('file_key') != file_key:
-        # New file uploaded — clear everything
+        # New file — clear previous state and temp file
+        old_tmp = st.session_state.get('tmp_src')
         st.session_state.clear()
-        st.session_state['file_key'] = file_key
 
-        # Delete old temp file if it exists
-        old = st.session_state.get('tmp_src')
-        if old and os.path.exists(old):
-            try: os.remove(old)
+        if old_tmp and os.path.exists(old_tmp):
+            try: os.remove(old_tmp)
             except Exception: pass
 
+        size_str = fmt_size(uploaded.size / 1048576)
         with st.spinner(
-            f"Saving **{uploaded.name}** "
-            f"({fmt_size(uploaded.size / 1048576)}) to disk…"):
+            f"Saving **{uploaded.name}** ({size_str}) to disk — "
+            f"large files may take a moment…"):
             tmp_src = save_upload(uploaded)
 
         if not tmp_src:
@@ -686,7 +689,6 @@ def main():
             st.markdown(f"**{uploaded.name}**")
             show_file_info(uploaded.name, info, audio_only)
 
-        # Browser preview (local blob — no server bandwidth used)
         with st.expander("▶️ Preview", expanded=False):
             st.video(uploaded)
     else:
@@ -726,12 +728,13 @@ def main():
         "margin-bottom:4px'>Quick presets</div>",
         unsafe_allow_html=True)
 
-    presets     = [1, 5, 10, 25, 50, 100, 250, 500]
+    presets     = [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2000, 5000]
     preset_cols = st.columns(len(presets))
     for i, p in enumerate(presets):
         disabled = float(p) >= orig_mb
+        label    = f"{p} MB" if p < 1024 else f"{p//1024} GB"
         if preset_cols[i].button(
-            f"{p} MB",
+            label,
             key=f"pre_{p}",
             disabled=disabled,
             use_container_width=True,
@@ -835,7 +838,6 @@ def main():
         with col_b:
             if st.button("📂 Upload New File",
                          use_container_width=True):
-                # Clean up temp file
                 if tmp_src and os.path.exists(tmp_src):
                     try: os.remove(tmp_src)
                     except Exception: pass
