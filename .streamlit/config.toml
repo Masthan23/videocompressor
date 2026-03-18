@@ -1,5 +1,6 @@
+# .streamlit/config.toml
 [server]
-maxUploadSize = 1024
+maxUploadSize = 10240
 headless = true
 enableCORS = false
 enableXsrfProtection = false
