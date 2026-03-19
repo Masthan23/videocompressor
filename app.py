@@ -1,4 +1,3 @@
-# app.py  ── Streamlit Cloud version  (10 GB upload support)
 from __future__ import annotations
 
 import streamlit as st
@@ -14,20 +13,17 @@ import io
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-# ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="🗜️ Media Compressor",
     page_icon="🗜️",
     layout="centered",
 )
 
-# ── Custom CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
   .stApp { background: #07090f; color: #dde1f5; }
   .block-container { max-width: 780px; padding-top: 1.5rem; }
   #MainMenu, footer, header { visibility: hidden; }
-
   .stButton > button {
     background: linear-gradient(135deg, #6c5fff, #a09aff) !important;
     color: white !important; border: none !important;
@@ -46,10 +42,6 @@ st.markdown("""
     border-radius: 10px !important; font-weight: 800 !important;
     width: 100% !important; font-size: 1rem !important;
     padding: 0.75rem !important;
-  }
-  .stDownloadButton > button:hover {
-    background: linear-gradient(135deg, #27ae60, #1e8449) !important;
-    transform: translateY(-2px);
   }
   .stProgress > div > div > div > div {
     background: linear-gradient(90deg, #6c5fff, #a09aff) !important;
@@ -91,9 +83,7 @@ st.markdown("""
     background: linear-gradient(135deg,
       rgba(46,204,113,.08), rgba(108,95,255,.06));
     border: 1px solid rgba(46,204,113,.25);
-    border-radius: 14px;
-    padding: 20px 22px;
-    margin: 12px 0;
+    border-radius: 14px; padding: 20px 22px; margin: 12px 0;
   }
   .result-title {
     font-size: 1.3rem; font-weight: 900;
@@ -104,66 +94,71 @@ st.markdown("""
     display: inline-block;
     background: rgba(46,204,113,.12);
     border: 1px solid rgba(46,204,113,.28);
-    border-radius: 20px;
-    padding: 4px 14px;
-    font-size: .88rem;
-    font-weight: 800;
-    color: #2ecc71;
-    margin-top: 8px;
+    border-radius: 20px; padding: 4px 14px;
+    font-size: .88rem; font-weight: 800;
+    color: #2ecc71; margin-top: 8px;
   }
   .warn-banner {
     background: rgba(231,76,60,.07);
     border: 1px solid rgba(231,76,60,.25);
-    border-radius: 10px;
-    padding: 10px 14px;
-    color: #e74c3c;
-    font-size: .85rem;
-    margin: 8px 0;
+    border-radius: 10px; padding: 10px 14px;
+    color: #e74c3c; font-size: .85rem; margin: 8px 0;
   }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ── FFmpeg helpers ─────────────────────────────────────────────────────────────
-@st.cache_resource
+# ── FFmpeg check (NO cache — must run fresh every time) ───────────────────────
 def check_ffmpeg() -> bool:
+    """Check if ffmpeg is available. No caching to avoid stale results."""
     try:
-        r = subprocess.run(
+        result = subprocess.run(
             ['ffmpeg', '-version'],
             capture_output=True,
             timeout=10,
         )
-        return r.returncode == 0
+        if result.returncode == 0:
+            return True
+    except FileNotFoundError:
+        pass
     except Exception:
-        return False
+        pass
+
+    # Fallback: check common install paths directly
+    for path in ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg',
+                 '/bin/ffmpeg']:
+        if os.path.isfile(path):
+            return True
+    return False
 
 
-@st.cache_resource
-def check_ffprobe() -> bool:
-    try:
-        r = subprocess.run(
-            ['ffprobe', '-version'],
-            capture_output=True,
-            timeout=10,
-        )
-        return r.returncode == 0
-    except Exception:
-        return False
+def get_ffmpeg_path() -> str:
+    """Return the full path to ffmpeg binary."""
+    for path in ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg',
+                 '/bin/ffmpeg']:
+        if os.path.isfile(path):
+            return path
+    return 'ffmpeg'  # fallback to PATH
+
+
+def get_ffprobe_path() -> str:
+    """Return the full path to ffprobe binary."""
+    for path in ['/usr/bin/ffprobe', '/usr/local/bin/ffprobe',
+                 '/bin/ffprobe']:
+        if os.path.isfile(path):
+            return path
+    return 'ffprobe'  # fallback to PATH
 
 
 # ── Media probe ────────────────────────────────────────────────────────────────
 def get_media_info(path: str) -> Optional[Dict[str, Any]]:
     try:
+        ffprobe = get_ffprobe_path()
         r = subprocess.run(
-            [
-                'ffprobe', '-v', 'quiet',
-                '-print_format', 'json',
-                '-show_streams', '-show_format',
-                path,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
+            [ffprobe, '-v', 'quiet',
+             '-print_format', 'json',
+             '-show_streams', '-show_format', path],
+            capture_output=True, text=True, timeout=120,
         )
         if r.returncode != 0:
             return None
@@ -171,19 +166,13 @@ def get_media_info(path: str) -> Optional[Dict[str, Any]]:
         data = json.loads(r.stdout)
         sz = os.path.getsize(path)
         info: Dict[str, Any] = {
-            'duration': 0,
-            'width': 0,
-            'height': 0,
-            'fps': 0,
+            'duration': 0, 'width': 0, 'height': 0, 'fps': 0,
             'size': sz,
             'size_mb': round(sz / 1048576, 2),
-            'video_codec': '',
-            'audio_codec': '',
-            'bitrate': 0,
-            'has_audio': False,
+            'video_codec': '', 'audio_codec': '',
+            'bitrate': 0, 'has_audio': False,
             'is_audio_only': False,
-            'sample_rate': 0,
-            'channels': 0,
+            'sample_rate': 0, 'channels': 0,
         }
 
         fmt = data.get('format', {})
@@ -213,14 +202,16 @@ def get_media_info(path: str) -> Optional[Dict[str, Any]]:
                     pass
                 if not info['duration']:
                     try:
-                        info['duration'] = float(s.get('duration') or 0)
+                        info['duration'] = float(
+                            s.get('duration') or 0)
                     except Exception:
                         pass
             elif ct == 'audio':
                 info['has_audio'] = True
                 info['audio_codec'] = s.get('codec_name', '') or ''
                 try:
-                    info['sample_rate'] = int(s.get('sample_rate') or 0)
+                    info['sample_rate'] = int(
+                        s.get('sample_rate') or 0)
                 except Exception:
                     pass
                 try:
@@ -229,13 +220,13 @@ def get_media_info(path: str) -> Optional[Dict[str, Any]]:
                     pass
                 if not info['duration']:
                     try:
-                        info['duration'] = float(s.get('duration') or 0)
+                        info['duration'] = float(
+                            s.get('duration') or 0)
                     except Exception:
                         pass
 
         info['is_audio_only'] = (not has_video) and info['has_audio']
         return info
-
     except Exception:
         return None
 
@@ -243,17 +234,12 @@ def get_media_info(path: str) -> Optional[Dict[str, Any]]:
 # ── Thumbnail ──────────────────────────────────────────────────────────────────
 def make_thumb_b64(path: str, ts: float = 5.0) -> Optional[str]:
     try:
+        ffmpeg = get_ffmpeg_path()
         ts = max(0.0, min(float(ts), 30.0))
         cmd = [
-            'ffmpeg', '-y',
-            '-ss', f'{ts:.2f}',
-            '-i', path,
-            '-vframes', '1',
-            '-q:v', '5',
-            '-vf', 'scale=480:-2',
-            '-f', 'image2pipe',
-            '-vcodec', 'mjpeg',
-            'pipe:1',
+            ffmpeg, '-y', '-ss', f'{ts:.2f}', '-i', path,
+            '-vframes', '1', '-q:v', '5', '-vf', 'scale=480:-2',
+            '-f', 'image2pipe', '-vcodec', 'mjpeg', 'pipe:1',
         ]
         r = subprocess.run(cmd, capture_output=True, timeout=30)
         if r.returncode == 0 and len(r.stdout) > 200:
@@ -302,29 +288,23 @@ def calc_audio_bitrate(target_mb: float, dur: float) -> int:
 
 def mime_for(ext: str) -> str:
     return {
-        'mp4': 'video/mp4',
-        'mkv': 'video/x-matroska',
-        'avi': 'video/x-msvideo',
-        'mov': 'video/quicktime',
-        'webm': 'video/webm',
-        'mp3': 'audio/mpeg',
-        'aac': 'audio/aac',
-        'wav': 'audio/wav',
-        'ogg': 'audio/ogg',
-        'opus': 'audio/opus',
-        'flac': 'audio/flac',
-        'm4a': 'audio/mp4',
+        'mp4': 'video/mp4', 'mkv': 'video/x-matroska',
+        'avi': 'video/x-msvideo', 'mov': 'video/quicktime',
+        'webm': 'video/webm', 'mp3': 'audio/mpeg',
+        'aac': 'audio/aac', 'wav': 'audio/wav',
+        'ogg': 'audio/ogg', 'opus': 'audio/opus',
+        'flac': 'audio/flac', 'm4a': 'audio/mp4',
     }.get(ext, 'application/octet-stream')
 
 
-# ── Save uploaded file to disk ─────────────────────────────────────────────────
+# ── Save uploaded file ─────────────────────────────────────────────────────────
 def save_upload(uploaded_file) -> Optional[str]:
     try:
         suffix = Path(uploaded_file.name).suffix.lower() or '.bin'
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
         os.close(tmp_fd)
 
-        CHUNK = 16 * 1024 * 1024  # 16 MB
+        CHUNK = 16 * 1024 * 1024
         written = 0
         uploaded_file.seek(0)
 
@@ -339,9 +319,7 @@ def save_upload(uploaded_file) -> Optional[str]:
         if written < 512:
             os.remove(tmp_path)
             return None
-
         return tmp_path
-
     except Exception as e:
         st.error(f"Failed to save upload: {e}")
         return None
@@ -359,6 +337,7 @@ def compress_file(
     tmp_out: Optional[str] = None
     tmp_pass: Optional[str] = None
     null_dev = 'NUL' if sys.platform == 'win32' else '/dev/null'
+    ffmpeg = get_ffmpeg_path()
 
     try:
         dur = float(info['duration'])
@@ -369,36 +348,28 @@ def compress_file(
         is_audio_src = bool(info.get('is_audio_only'))
 
         if dur <= 0:
-            st.error("Cannot determine duration — file may be corrupt.")
+            st.error("Cannot determine duration.")
             return None
 
         tmp_fd, tmp_out = tempfile.mkstemp(suffix='.' + out_fmt)
         os.close(tmp_fd)
-        os.remove(tmp_out)  # let FFmpeg create it fresh
+        os.remove(tmp_out)
 
-        # ── AUDIO path ─────────────────────────────────────────────────────
+        # ── AUDIO ──────────────────────────────────────────────────────────
         if is_audio_out or is_audio_src:
             kbps = calc_audio_bitrate(target_mb, dur)
             status_text.markdown(
-                f"🎵 **Audio encode** → **{kbps} kbps**  "
-                f"*(target {target_mb} MB from {orig_mb} MB)*"
-            )
+                f"🎵 **Audio encode** → **{kbps} kbps**")
             progress_bar.progress(0.08)
 
             codec_map: Dict[str, list] = {
-                'mp3': [
-                    '-c:a', 'libmp3lame',
-                    '-b:a', f'{kbps}k',
-                    '-compression_level', '0',
-                ],
+                'mp3': ['-c:a', 'libmp3lame', '-b:a', f'{kbps}k',
+                        '-compression_level', '0'],
                 'aac': ['-c:a', 'aac', '-b:a', f'{kbps}k'],
                 'm4a': ['-c:a', 'aac', '-b:a', f'{kbps}k'],
                 'ogg': ['-c:a', 'libvorbis', '-b:a', f'{kbps}k'],
-                'opus': [
-                    '-c:a', 'libopus',
-                    '-b:a', f'{kbps}k',
-                    '-vbr', 'on',
-                ],
+                'opus': ['-c:a', 'libopus', '-b:a', f'{kbps}k',
+                         '-vbr', 'on'],
                 'flac': ['-c:a', 'flac', '-compression_level', '8'],
                 'wav': ['-c:a', 'pcm_s16le'],
             }
@@ -407,52 +378,42 @@ def compress_file(
                 ['-c:a', 'libmp3lame', '-b:a', f'{kbps}k'],
             )
             cmd = (
-                ['ffmpeg', '-y', '-i', src, '-vn']
-                + codec_args
-                + [tmp_out]
+                [ffmpeg, '-y', '-i', src, '-vn']
+                + codec_args + [tmp_out]
             )
             base_pct = 0.10
 
-        # ── VIDEO path ─────────────────────────────────────────────────────
+        # ── VIDEO ──────────────────────────────────────────────────────────
         else:
             a_kbps = 128
             v_kbps = calc_video_bitrate(target_mb, dur, a_kbps)
 
             tmp_pass = tempfile.mktemp(prefix='ffpass_')
             cmd1 = [
-                'ffmpeg', '-y', '-i', src,
-                '-c:v', 'libx264',
-                '-b:v', f'{v_kbps}k',
-                '-pass', '1',
-                '-passlogfile', tmp_pass,
-                '-preset', 'fast',
-                '-an',
+                ffmpeg, '-y', '-i', src,
+                '-c:v', 'libx264', '-b:v', f'{v_kbps}k',
+                '-pass', '1', '-passlogfile', tmp_pass,
+                '-preset', 'fast', '-an',
                 '-f', 'null', null_dev,
             ]
             status_text.markdown("📊 **Pass 1/2** — analysing…")
             progress_bar.progress(0.05)
 
             p1 = subprocess.Popen(
-                cmd1,
-                stdout=subprocess.PIPE,
+                cmd1, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
+                text=True, bufsize=1,
             )
-
-            for line in p1.stdout:  # type: ignore[union-attr]
+            for line in p1.stdout:  # type: ignore
                 m = re.search(r'time=(\d+):(\d+):([\d.]+)', line)
                 if m and dur > 0:
-                    el = (
-                        int(m.group(1)) * 3600
-                        + int(m.group(2)) * 60
-                        + float(m.group(3))
-                    )
+                    el = (int(m.group(1)) * 3600
+                          + int(m.group(2)) * 60
+                          + float(m.group(3)))
                     ratio = min(el / dur, 1.0)
                     progress_bar.progress(0.05 + ratio * 0.35)
                     status_text.markdown(
-                        f"📊 **Pass 1/2** — {int(ratio * 100)}%"
-                    )
+                        f"📊 **Pass 1/2** — {int(ratio * 100)}%")
 
             p1.wait(timeout=86400)
             if p1.returncode != 0:
@@ -460,44 +421,37 @@ def compress_file(
                 return None
 
             cmd = [
-                'ffmpeg', '-y', '-i', src,
+                ffmpeg, '-y', '-i', src,
                 '-c:v', 'libx264',
                 '-b:v', f'{v_kbps}k',
                 '-maxrate', f'{int(v_kbps * 1.4)}k',
                 '-bufsize', f'{v_kbps * 2}k',
-                '-pass', '2',
-                '-passlogfile', tmp_pass,
+                '-pass', '2', '-passlogfile', tmp_pass,
                 '-preset', 'fast',
-                '-c:a', 'aac',
-                '-b:a', f'{a_kbps}k',
+                '-c:a', 'aac', '-b:a', f'{a_kbps}k',
                 '-movflags', '+faststart',
                 tmp_out,
             ]
             base_pct = 0.42
             status_text.markdown(
-                f"🎬 **Pass 2/2** — encoding  "
-                f"*{v_kbps} kbps video + {a_kbps} kbps audio*"
-            )
+                f"🎬 **Pass 2/2** — "
+                f"*{v_kbps} kbps video + {a_kbps} kbps audio*")
             progress_bar.progress(base_pct)
 
-        # ── Run main encode ────────────────────────────────────────────────
+        # ── Run encode ─────────────────────────────────────────────────────
         proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
+            cmd, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            text=True, bufsize=1,
         )
 
         last_update = time.time()
-        for line in proc.stdout:  # type: ignore[union-attr]
+        for line in proc.stdout:  # type: ignore
             m = re.search(r'time=(\d+):(\d+):([\d.]+)', line)
             if m and dur > 0:
-                el = (
-                    int(m.group(1)) * 3600
-                    + int(m.group(2)) * 60
-                    + float(m.group(3))
-                )
+                el = (int(m.group(1)) * 3600
+                      + int(m.group(2)) * 60
+                      + float(m.group(3)))
                 ratio = min(el / dur, 1.0)
                 pct = base_pct + ratio * (0.95 - base_pct)
                 progress_bar.progress(min(pct, 0.95))
@@ -509,60 +463,46 @@ def compress_file(
                     spd = float(spd_m.group(1)) if spd_m else 0.0
                     eta = (
                         f"  ·  ETA ~{int((dur - el) / spd)}s"
-                        if spd > 0.01 and el < dur
-                        else ""
+                        if spd > 0.01 and el < dur else ""
                     )
                     sz_m = re.search(r'size=\s*(\d+)kB', line)
                     cur = (
                         f"  ·  "
-                        f"{round(int(sz_m.group(1)) / 1024, 1)}"
-                        f" MB written"
-                        if sz_m
-                        else ""
+                        f"{round(int(sz_m.group(1)) / 1024, 1)} MB"
+                        if sz_m else ""
                     )
                     status_text.markdown(
                         f"🗜️ **Compressing…** {int(ratio * 100)}%"
-                        f"{cur}{eta}"
-                    )
+                        f"{cur}{eta}")
 
         proc.wait(timeout=86400)
 
-        # ── Validate ───────────────────────────────────────────────────────
         if proc.returncode != 0:
-            st.error(
-                f"FFmpeg failed (rc={proc.returncode}). "
-                f"Try a different format or lower target size."
-            )
+            st.error(f"FFmpeg failed (rc={proc.returncode}).")
             return None
-
         if not os.path.exists(tmp_out):
             st.error("Output file was not created.")
             return None
 
         out_size = os.path.getsize(tmp_out)
         if out_size < 512:
-            st.error(
-                f"Output file too small ({out_size} bytes). "
-                f"Encoding may have failed."
-            )
+            st.error(f"Output too small ({out_size} bytes).")
             return None
 
         progress_bar.progress(1.0)
         status_text.markdown("✅ **Done!** Reading result…")
 
         buf = io.BytesIO()
-        READ_CHUNK = 16 * 1024 * 1024
         with open(tmp_out, 'rb') as fh:
             while True:
-                piece = fh.read(READ_CHUNK)
+                piece = fh.read(16 * 1024 * 1024)
                 if not piece:
                     break
                 buf.write(piece)
-
         return buf.getvalue()
 
     except subprocess.TimeoutExpired:
-        st.error("Compression timed out (24 h limit exceeded).")
+        st.error("Compression timed out.")
         return None
     except Exception as ex:
         st.error(f"Compression error: {ex}")
@@ -574,9 +514,8 @@ def compress_file(
             except Exception:
                 pass
         if tmp_pass:
-            for sfx in (
-                '', '.log', '-0.log', '.log.mbtree', '-0.log.mbtree'
-            ):
+            for sfx in ('', '.log', '-0.log',
+                        '.log.mbtree', '-0.log.mbtree'):
                 p = tmp_pass + sfx
                 if os.path.exists(p):
                     try:
@@ -585,10 +524,9 @@ def compress_file(
                         pass
 
 
-# ── File info chips ────────────────────────────────────────────────────────────
-def show_file_info(
-    filename: str, info: dict, audio_only: bool
-) -> None:
+# ── File info ──────────────────────────────────────────────────────────────────
+def show_file_info(filename: str, info: dict,
+                   audio_only: bool) -> None:
     dur_str = fmt_duration(info['duration'])
     if audio_only:
         c1, c2, c3, c4 = st.columns(4)
@@ -598,76 +536,66 @@ def show_file_info(
         c4.metric(
             "📡 Bitrate",
             f"{info['bitrate'] // 1000} kbps"
-            if info['bitrate']
-            else "—",
-        )
+            if info['bitrate'] else "—")
     else:
         c1, c2, c3, c4, c5 = st.columns(5)
-        res = (
-            f"{info['width']}×{info['height']}"
-            if info['width'] and info['height']
-            else "—"
-        )
+        res = (f"{info['width']}×{info['height']}"
+               if info['width'] and info['height'] else "—")
         c1.metric("⏱ Duration", dur_str)
         c2.metric("💾 Size", fmt_size(info['size_mb']))
         c3.metric("📐 Resolution", res)
-        c4.metric(
-            "🎞 FPS", str(info['fps']) if info['fps'] else "—"
-        )
-        c5.metric("🎬 Codec", info['video_codec'].upper() or "—")
+        c4.metric("🎞 FPS",
+                  str(info['fps']) if info['fps'] else "—")
+        c5.metric("🎬 Codec",
+                  info['video_codec'].upper() or "—")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MAIN APP
+# MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 def main() -> None:
     ff_ok = check_ffmpeg()
 
-    # ── Header ────────────────────────────────────────────────────────────
     col_title, col_badge = st.columns([5, 1])
     with col_title:
         st.markdown("# 🗜️ Media Compressor")
         st.caption(
             "Compress MP4 · MP3 · any video or audio "
-            "to your exact target size  ·  up to **10 GB**"
-        )
+            "to your exact target size  ·  up to **10 GB**")
     with col_badge:
         st.markdown(
-            "<div style='height:18px'></div>", unsafe_allow_html=True
-        )
+            "<div style='height:18px'></div>",
+            unsafe_allow_html=True)
         if ff_ok:
             st.success("✅ FFmpeg")
         else:
             st.error("❌ FFmpeg missing")
             st.info(
-                "Add `ffmpeg` to **packages.txt** in your repo root, "
-                "then reboot the app."
-            )
+                "Add `ffmpeg` to **packages.txt** in your repo "
+                "root, then reboot the app.")
             st.stop()
 
     st.divider()
 
-    # ── Step 1 — Upload ───────────────────────────────────────────────────
     st.markdown("### 📂 Step 1 — Upload Your File")
     st.caption(
         "Supported: MP4, MKV, AVI, MOV, WebM, MP3, WAV, AAC, "
-        "OGG, OPUS, FLAC, M4A and more  ·  Max **10 GB**"
-    )
+        "OGG, OPUS, FLAC, M4A  ·  Max **10 GB**")
 
     uploaded = st.file_uploader(
         "upload",
         type=[
             'mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm',
             'm4v', 'mpeg', 'mpg', '3gp', 'ts', 'mts', 'ogv',
-            'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'wma', 'm4a',
+            'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac',
+            'wma', 'm4a',
         ],
         label_visibility='collapsed',
     )
 
     if not uploaded:
         st.markdown("""
-        <div style="
-          background:#0d0f1c;border:2px dashed #1e2238;
+        <div style="background:#0d0f1c;border:2px dashed #1e2238;
           border-radius:14px;padding:40px;text-align:center;
           color:#565a7a;margin-top:8px">
           <div style="font-size:2.5rem;margin-bottom:8px">🎬</div>
@@ -682,23 +610,19 @@ def main() -> None:
         """, unsafe_allow_html=True)
         st.stop()
 
-    # ── Guard: reject anything over 10 GB ─────────────────────────────────
     MAX_BYTES = 10 * 1024 * 1024 * 1024
     if uploaded.size > MAX_BYTES:
         st.error(
             f"File too large: "
             f"**{fmt_size(uploaded.size / 1048576)}**  \n"
-            f"Maximum allowed size is **10 GB**."
-        )
+            f"Maximum is **10 GB**.")
         st.stop()
 
-    # ── Save to disk ───────────────────────────────────────────────────────
     file_key = f"{uploaded.name}_{uploaded.size}"
 
     if st.session_state.get('file_key') != file_key:
         old_tmp = st.session_state.get('tmp_src')
         st.session_state.clear()
-
         if old_tmp and os.path.exists(str(old_tmp)):
             try:
                 os.remove(old_tmp)
@@ -707,8 +631,7 @@ def main() -> None:
 
         size_str = fmt_size(uploaded.size / 1048576)
         with st.spinner(
-            f"Saving **{uploaded.name}** ({size_str}) to disk…"
-        ):
+                f"Saving **{uploaded.name}** ({size_str})…"):
             tmp_src = save_upload(uploaded)
 
         if not tmp_src:
@@ -724,21 +647,14 @@ def main() -> None:
         st.session_state.clear()
         st.stop()
 
-    # ── Probe ──────────────────────────────────────────────────────────────
     if 'info' not in st.session_state:
         with st.spinner("Reading file info…"):
             info = get_media_info(str(tmp_src))
         if not info:
-            st.error(
-                "Cannot read media info — "
-                "is the file a valid video/audio?"
-            )
+            st.error("Cannot read media info.")
             st.stop()
         if info['duration'] <= 0:
-            st.error(
-                "Cannot determine duration — "
-                "file may be corrupt or unsupported."
-            )
+            st.error("Cannot determine duration.")
             st.stop()
         st.session_state['info'] = info
     else:
@@ -746,11 +662,11 @@ def main() -> None:
 
     audio_only = (
         Path(uploaded.name).suffix.lower().lstrip('.')
-        in {'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'wma', 'm4a'}
+        in {'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac',
+            'wma', 'm4a'}
         or info['is_audio_only']
     )
 
-    # ── File info ──────────────────────────────────────────────────────────
     st.markdown("### 📊 File Information")
 
     if not audio_only:
@@ -762,8 +678,7 @@ def main() -> None:
                 st.image(
                     f"data:image/jpeg;base64,{thumb}",
                     use_container_width=True,
-                    caption="Preview",
-                )
+                    caption="Preview")
             with info_col:
                 st.markdown(
                     f"**{uploaded.name}**  \n"
@@ -772,8 +687,7 @@ def main() -> None:
                     f"{info['width']}×{info['height']}  ·  "
                     f"{info['fps']} fps  ·  "
                     f"{fmt_duration(info['duration'])}</span>",
-                    unsafe_allow_html=True,
-                )
+                    unsafe_allow_html=True)
                 show_file_info(uploaded.name, info, audio_only)
         else:
             st.markdown(f"**{uploaded.name}**")
@@ -787,15 +701,12 @@ def main() -> None:
             f"<span style='color:#565a7a;font-size:.8rem'>"
             f"{info['audio_codec'].upper()}  ·  "
             f"{fmt_duration(info['duration'])}</span>",
-            unsafe_allow_html=True,
-        )
+            unsafe_allow_html=True)
         show_file_info(uploaded.name, info, audio_only)
         with st.expander("🔊 Preview", expanded=False):
             st.audio(uploaded)
 
     st.divider()
-
-    # ── Step 2 — Settings ──────────────────────────────────────────────────
     st.markdown("### 🗜️ Step 2 — Compression Settings")
 
     orig_mb = info['size_mb']
@@ -816,8 +727,7 @@ def main() -> None:
         "<div style='font-size:.78rem;color:#565a7a;"
         "text-transform:uppercase;letter-spacing:.5px;"
         "margin-bottom:4px'>Quick presets</div>",
-        unsafe_allow_html=True,
-    )
+        unsafe_allow_html=True)
 
     presets = [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2000, 5000]
     preset_cols = st.columns(len(presets))
@@ -825,8 +735,7 @@ def main() -> None:
         disabled = float(p) >= orig_mb
         label = f"{p} MB" if p < 1024 else f"{p // 1024} GB"
         if preset_cols[i].button(
-            label,
-            key=f"pre_{p}",
+            label, key=f"pre_{p}",
             disabled=disabled,
             use_container_width=True,
         ):
@@ -843,23 +752,16 @@ def main() -> None:
             f'<div class="warn-banner">⚠️ Target '
             f'({fmt_size(target_mb)}) must be smaller than '
             f'original ({fmt_size(orig_mb)})</div>',
-            unsafe_allow_html=True,
-        )
+            unsafe_allow_html=True)
     else:
         m1, m2, m3 = st.columns(3)
         m1.metric("📦 Original", fmt_size(orig_mb))
-        m2.metric(
-            "🎯 Target",
-            fmt_size(target_mb),
-            delta=f"-{fmt_size(saved_mb)}",
-        )
+        m2.metric("🎯 Target", fmt_size(target_mb),
+                  delta=f"-{fmt_size(saved_mb)}")
         m3.metric("📉 Reduction", f"{reduction}%")
 
     st.markdown(
-        "<div style='height:8px'></div>", unsafe_allow_html=True
-    )
-
-    # ── Format picker ──────────────────────────────────────────────────────
+        "<div style='height:8px'></div>", unsafe_allow_html=True)
     st.markdown("**🎯 Output Format**")
 
     out_fmt: str
@@ -867,39 +769,32 @@ def main() -> None:
         out_fmt = st.radio(  # type: ignore[assignment]
             "Audio format",
             ['mp3', 'aac', 'ogg', 'opus', 'flac', 'wav', 'm4a'],
-            horizontal=True,
-            label_visibility='collapsed',
+            horizontal=True, label_visibility='collapsed',
         )
         st.caption(f"Output: **{out_fmt.upper()}** (audio only)")
     else:
         fmt_type = st.radio(
             "Format type",
             ["📹 Video", "🎵 Audio (extract audio)"],
-            horizontal=True,
-            label_visibility='collapsed',
+            horizontal=True, label_visibility='collapsed',
         )
         if fmt_type == "📹 Video":
             out_fmt = st.radio(  # type: ignore[assignment]
                 "Video format",
                 ['mp4', 'mkv', 'avi', 'mov', 'webm'],
-                horizontal=True,
-                label_visibility='collapsed',
+                horizontal=True, label_visibility='collapsed',
             )
         else:
             out_fmt = st.radio(  # type: ignore[assignment]
                 "Audio format",
                 ['mp3', 'aac', 'ogg', 'opus', 'flac', 'wav', 'm4a'],
-                horizontal=True,
-                label_visibility='collapsed',
+                horizontal=True, label_visibility='collapsed',
             )
         st.caption(f"Output: **{out_fmt.upper()}**")
 
     st.divider()
-
-    # ── Step 3 — Compress ──────────────────────────────────────────────────
     st.markdown("### 🚀 Step 3 — Compress")
 
-    # ── Show existing result ───────────────────────────────────────────────
     if st.session_state.get('result'):
         res = st.session_state['result']
         final_mb = round(len(res['data']) / 1048576, 2)
@@ -918,16 +813,11 @@ def main() -> None:
             🎉 {red}% smaller  ·  saved {fmt_size(saved)}
           </div>
         </div>
-        """,
-            unsafe_allow_html=True,
-        )
+        """, unsafe_allow_html=True)
 
         st.download_button(
-            label=(
-                f"⬇️  Download  "
-                f"{base_name}.{res['ext']}  "
-                f"({fmt_size(final_mb)})"
-            ),
+            label=(f"⬇️  Download  {base_name}.{res['ext']}  "
+                   f"({fmt_size(final_mb)})"),
             data=res['data'],
             file_name=f"{base_name}.{res['ext']}",
             mime=mime_for(res['ext']),
@@ -936,15 +826,13 @@ def main() -> None:
 
         col_a, col_b = st.columns(2)
         with col_a:
-            if st.button(
-                "🔄 Compress Again", use_container_width=True
-            ):
+            if st.button("🔄 Compress Again",
+                         use_container_width=True):
                 st.session_state.pop('result', None)
                 st.rerun()
         with col_b:
-            if st.button(
-                "📂 Upload New File", use_container_width=True
-            ):
+            if st.button("📂 Upload New File",
+                         use_container_width=True):
                 if tmp_src and os.path.exists(str(tmp_src)):
                     try:
                         os.remove(tmp_src)
@@ -953,7 +841,6 @@ def main() -> None:
                 st.session_state.clear()
                 st.rerun()
 
-    # ── Compress button ────────────────────────────────────────────────────
     else:
         btn_disabled = target_mb >= orig_mb
         btn_label = (
@@ -964,8 +851,7 @@ def main() -> None:
         )
 
         if st.button(
-            btn_label,
-            type="primary",
+            btn_label, type="primary",
             disabled=btn_disabled,
             use_container_width=True,
         ):
@@ -990,8 +876,7 @@ def main() -> None:
                 final_mb = round(len(result_bytes) / 1048576, 2)
                 status_text.markdown(
                     f"✅ **Done in {elapsed:.0f}s** — "
-                    f"{fmt_size(orig_mb)} → {fmt_size(final_mb)}"
-                )
+                    f"{fmt_size(orig_mb)} → {fmt_size(final_mb)}")
                 st.session_state['result'] = {
                     'data': result_bytes,
                     'ext': out_fmt,
@@ -999,8 +884,7 @@ def main() -> None:
                 st.rerun()
             else:
                 status_text.markdown(
-                    "❌ **Compression failed** — see error above"
-                )
+                    "❌ **Compression failed** — see error above")
 
 
 if __name__ == '__main__':
