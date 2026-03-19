@@ -2,6 +2,7 @@
 import streamlit as st
 import subprocess, os, uuid, json, tempfile, base64, time, re, sys, io
 from pathlib import Path
+from typing import Optional, Dict, Any
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -152,7 +153,7 @@ def check_ffprobe() -> bool:
 
 
 # ── Media probe ────────────────────────────────────────────────────────────────
-def get_media_info(path: str) -> dict | None:
+def get_media_info(path: str) -> Optional[Dict[str, Any]]:
     try:
         r = subprocess.run(
             ['ffprobe', '-v', 'quiet',
@@ -213,7 +214,7 @@ def get_media_info(path: str) -> dict | None:
 
 
 # ── Thumbnail ──────────────────────────────────────────────────────────────────
-def make_thumb_b64(path: str, ts: float = 5.0) -> str | None:
+def make_thumb_b64(path: str, ts: float = 5.0) -> Optional[str]:
     try:
         ts = max(0.0, min(float(ts), 30.0))
         cmd = [
@@ -273,19 +274,14 @@ def mime_for(ext: str) -> str:
     }.get(ext, 'application/octet-stream')
 
 
-# ── Save uploaded file to disk (chunked, handles up to 10 GB) ─────────────────
-def save_upload(uploaded_file) -> str | None:
-    """
-    Write the Streamlit UploadedFile to a real temp file on disk.
-    Uses 16 MB chunks to efficiently handle files up to 10 GB.
-    Returns the path, or None on failure.
-    """
+# ── Save uploaded file to disk ─────────────────────────────────────────────────
+def save_upload(uploaded_file) -> Optional[str]:
     try:
         suffix = Path(uploaded_file.name).suffix.lower() or '.bin'
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=suffix)
         os.close(tmp_fd)
 
-        CHUNK   = 16 * 1024 * 1024   # 16 MB chunks for large file efficiency
+        CHUNK   = 16 * 1024 * 1024
         written = 0
         uploaded_file.seek(0)
 
@@ -316,11 +312,7 @@ def compress_file(
     info: dict,
     progress_bar,
     status_text,
-) -> bytes | None:
-    """
-    Compress src → bytes.
-    Shows live progress via Streamlit widgets.
-    """
+) -> Optional[bytes]:
     tmp_out  = None
     tmp_pass = None
     null_dev = 'NUL' if sys.platform == 'win32' else '/dev/null'
@@ -338,7 +330,7 @@ def compress_file(
 
         tmp_fd, tmp_out = tempfile.mkstemp(suffix='.' + out_fmt)
         os.close(tmp_fd)
-        os.remove(tmp_out)   # let FFmpeg create it fresh
+        os.remove(tmp_out)
 
         use_2pass = False
 
@@ -376,7 +368,6 @@ def compress_file(
             v_kbps    = calc_video_bitrate(target_mb, dur, a_kbps)
             use_2pass = True
 
-            # Pass 1
             tmp_pass = tempfile.mktemp(prefix='ffpass_')
             cmd1 = [
                 'ffmpeg', '-y', '-i', src,
@@ -406,12 +397,11 @@ def compress_file(
                     status_text.markdown(
                         f"📊 **Pass 1/2** — {int(ratio * 100)}%")
 
-            p1.wait(timeout=86400)   # 24 h for very large files
+            p1.wait(timeout=86400)
             if p1.returncode != 0:
                 st.error(f"Pass 1 failed (rc={p1.returncode})")
                 return None
 
-            # Pass 2
             cmd = [
                 'ffmpeg', '-y', '-i', src,
                 '-c:v', 'libx264',
@@ -463,9 +453,8 @@ def compress_file(
                         f"🗜️ **Compressing…** {int(ratio * 100)}%"
                         f"{cur}{eta}")
 
-        proc.wait(timeout=86400)   # 24 h for very large files
+        proc.wait(timeout=86400)
 
-        # ── Validate ───────────────────────────────────────────────────────
         if proc.returncode != 0:
             st.error(
                 f"FFmpeg failed (rc={proc.returncode}). "
@@ -486,9 +475,8 @@ def compress_file(
         progress_bar.progress(1.0)
         status_text.markdown("✅ **Done!** Reading result…")
 
-        # ── Stream large files in chunks rather than one giant read ────────
         buf = io.BytesIO()
-        READ_CHUNK = 16 * 1024 * 1024   # 16 MB
+        READ_CHUNK = 16 * 1024 * 1024
         with open(tmp_out, 'rb') as fh:
             while True:
                 piece = fh.read(READ_CHUNK)
@@ -546,7 +534,6 @@ def show_file_info(filename: str, info: dict, audio_only: bool) -> None:
 def main():
     ff_ok = check_ffmpeg()
 
-    # ── Header ────────────────────────────────────────────────────────────────
     col_title, col_badge = st.columns([5, 1])
     with col_title:
         st.markdown("# 🗜️ Media Compressor")
@@ -566,7 +553,6 @@ def main():
 
     st.divider()
 
-    # ── Step 1 — Upload ────────────────────────────────────────────────────────
     st.markdown("### 📂 Step 1 — Upload Your File")
     st.caption("Supported: MP4, MKV, AVI, MOV, WebM, MP3, WAV, AAC, "
                "OGG, OPUS, FLAC, M4A and more  ·  Max **10 GB**")
@@ -599,19 +585,16 @@ def main():
         """, unsafe_allow_html=True)
         st.stop()
 
-    # ── Guard: reject anything over 10 GB ─────────────────────────────────────
-    MAX_BYTES = 10 * 1024 * 1024 * 1024   # 10 GB
+    MAX_BYTES = 10 * 1024 * 1024 * 1024
     if uploaded.size > MAX_BYTES:
         st.error(
             f"File too large: **{fmt_size(uploaded.size / 1048576)}**  \n"
             f"Maximum allowed size is **10 GB**.")
         st.stop()
 
-    # ── Save to disk (only when file changes) ─────────────────────────────────
     file_key = f"{uploaded.name}_{uploaded.size}"
 
     if st.session_state.get('file_key') != file_key:
-        # New file — clear previous state and temp file
         old_tmp = st.session_state.get('tmp_src')
         st.session_state.clear()
 
@@ -621,8 +604,7 @@ def main():
 
         size_str = fmt_size(uploaded.size / 1048576)
         with st.spinner(
-            f"Saving **{uploaded.name}** ({size_str}) to disk — "
-            f"large files may take a moment…"):
+            f"Saving **{uploaded.name}** ({size_str}) to disk…"):
             tmp_src = save_upload(uploaded)
 
         if not tmp_src:
@@ -638,7 +620,6 @@ def main():
         st.session_state.clear()
         st.stop()
 
-    # ── Probe ──────────────────────────────────────────────────────────────────
     if 'info' not in st.session_state:
         with st.spinner("Reading file info…"):
             info = get_media_info(tmp_src)
@@ -662,7 +643,6 @@ def main():
         or info['is_audio_only']
     )
 
-    # ── File info ──────────────────────────────────────────────────────────────
     st.markdown("### 📊 File Information")
 
     if not audio_only:
@@ -673,7 +653,7 @@ def main():
             with th_col:
                 st.image(
                     f"data:image/jpeg;base64,{thumb}",
-                    use_column_width=True,
+                    use_container_width=True,   # ✅ FIXED
                     caption="Preview")
             with info_col:
                 st.markdown(
@@ -704,7 +684,6 @@ def main():
 
     st.divider()
 
-    # ── Step 2 — Settings ──────────────────────────────────────────────────────
     st.markdown("### 🗜️ Step 2 — Compression Settings")
 
     orig_mb  = info['size_mb']
@@ -721,7 +700,6 @@ def main():
         format="%.1f MB",
     )
 
-    # Quick preset buttons
     st.markdown(
         "<div style='font-size:.78rem;color:#565a7a;"
         "text-transform:uppercase;letter-spacing:.5px;"
@@ -742,7 +720,6 @@ def main():
             target_mb = float(p)
             st.rerun()
 
-    # Size comparison
     reduction = round((1 - target_mb / orig_mb) * 100, 1) if orig_mb else 0
     saved_mb  = round(orig_mb - target_mb, 1)
 
@@ -760,7 +737,6 @@ def main():
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    # ── Format picker ──────────────────────────────────────────────────────────
     st.markdown("**🎯 Output Format**")
 
     if audio_only:
@@ -796,10 +772,8 @@ def main():
 
     st.divider()
 
-    # ── Step 3 — Compress ──────────────────────────────────────────────────────
     st.markdown("### 🚀 Step 3 — Compress")
 
-    # ── Show existing result ───────────────────────────────────────────────────
     if st.session_state.get('result'):
         res       = st.session_state['result']
         final_mb  = round(len(res['data']) / 1048576, 2)
@@ -844,7 +818,6 @@ def main():
                 st.session_state.clear()
                 st.rerun()
 
-    # ── Compress button ────────────────────────────────────────────────────────
     else:
         btn_disabled = (target_mb >= orig_mb)
         btn_label    = (
